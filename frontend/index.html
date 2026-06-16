@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>古代巢车结构仿真与视野分析系统</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <header class="app-header">
+        <div class="header-left">
+            <h1>🏛️ 古代巢车结构仿真与视野分析系统</h1>
+            <span class="subtitle">春秋战国时期巢车复原研究</span>
+        </div>
+        <div class="header-right">
+            <div class="status-indicator" id="connectionStatus">
+                <span class="dot"></span>
+                <span class="text">未连接</span>
+            </div>
+            <div class="alert-counter" id="alertCounter" style="display:none;">
+                <span class="badge">0</span>
+                <span>告警</span>
+            </div>
+        </div>
+    </header>
+
+    <main class="app-main">
+        <aside class="sidebar sidebar-left">
+            <div class="panel">
+                <h3>巢车选择</h3>
+                <select id="cartSelect" class="form-control">
+                    <option value="">请选择巢车</option>
+                </select>
+            </div>
+
+            <div class="panel">
+                <h3>实时传感器数据</h3>
+                <div class="sensor-grid">
+                    <div class="sensor-item">
+                        <label>悬臂应力</label>
+                        <span id="boomStress" class="sensor-value">--</span>
+                        <span class="unit">MPa</span>
+                    </div>
+                    <div class="sensor-item">
+                        <label>吊篮晃动</label>
+                        <span id="basketSway" class="sensor-value">--</span>
+                        <span class="unit">m</span>
+                    </div>
+                    <div class="sensor-item">
+                        <label>高度</label>
+                        <span id="currentHeight" class="sensor-value">--</span>
+                        <span class="unit">m</span>
+                    </div>
+                    <div class="sensor-item">
+                        <label>观察距离</label>
+                        <span id="obsDistance" class="sensor-value">--</span>
+                        <span class="unit">m</span>
+                    </div>
+                    <div class="sensor-item">
+                        <label>风速</label>
+                        <span id="windSpeed" class="sensor-value">--</span>
+                        <span class="unit">m/s</span>
+                    </div>
+                    <div class="sensor-item">
+                        <label>风向</label>
+                        <span id="windDir" class="sensor-value">--</span>
+                        <span class="unit">°</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h3>仿真参数</h3>
+                <div class="form-group">
+                    <label>模拟高度 (m)</label>
+                    <input type="range" id="simHeight" min="4" max="18" step="0.5" value="10">
+                    <span id="simHeightVal" class="range-val">10.0</span>
+                </div>
+                <div class="form-group">
+                    <label>风速 (m/s)</label>
+                    <input type="range" id="simWindSpeed" min="0" max="30" step="0.5" value="5">
+                    <span id="simWindSpeedVal" class="range-val">5.0</span>
+                </div>
+                <div class="form-group">
+                    <label>风向 (°)</label>
+                    <input type="range" id="simWindDir" min="0" max="360" step="5" value="0">
+                    <span id="simWindDirVal" class="range-val">0</span>
+                </div>
+                <button id="runSimulation" class="btn btn-primary">运行结构仿真</button>
+                <button id="runVision" class="btn btn-secondary">运行视野分析</button>
+            </div>
+
+            <div class="panel">
+                <h3>结构状态</h3>
+                <div class="status-grid">
+                    <div class="status-item">
+                        <label>应力状态</label>
+                        <span id="stressStatus" class="status-badge normal">正常</span>
+                    </div>
+                    <div class="status-item">
+                        <label>稳定状态</label>
+                        <span id="stabilityStatus" class="status-badge normal">稳定</span>
+                    </div>
+                    <div class="status-item">
+                        <label>安全系数</label>
+                        <span id="safetyFactor" class="status-value">--</span>
+                    </div>
+                    <div class="status-item">
+                        <label>应力比</label>
+                        <span id="stressRatio" class="status-value">--</span>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <section class="main-content">
+            <div class="tab-bar">
+                <button class="tab active" data-tab="3d">三维模型</button>
+                <button class="tab" data-tab="structure">结构仿真</button>
+                <button class="tab" data-tab="vision">视野分析</button>
+            </div>
+
+            <div class="tab-content active" id="tab-3d">
+                <div id="threejs-container" class="canvas-container"></div>
+                <div class="overlay-controls">
+                    <label><input type="checkbox" id="showVisionCone" checked> 显示视野锥</label>
+                    <label><input type="checkbox" id="showWireframe" checked> 显示结构线框</label>
+                    <label><input type="checkbox" id="showTerrain" checked> 显示地形</label>
+                </div>
+            </div>
+
+            <div class="tab-content" id="tab-structure">
+                <div class="canvas-row">
+                    <div class="canvas-panel">
+                        <h4>悬臂应力分布</h4>
+                        <canvas id="stressCanvas" width="600" height="400"></canvas>
+                    </div>
+                    <div class="canvas-panel">
+                        <h4>悬臂挠度分布</h4>
+                        <canvas id="deflectionCanvas" width="600" height="400"></canvas>
+                    </div>
+                </div>
+                <div class="canvas-row">
+                    <div class="canvas-panel">
+                        <h4>弯矩与剪力图</h4>
+                        <canvas id="momentShearCanvas" width="600" height="400"></canvas>
+                    </div>
+                    <div class="canvas-panel">
+                        <h4>风荷载分布</h4>
+                        <canvas id="windLoadCanvas" width="600" height="400"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="tab-vision">
+                <div class="canvas-row">
+                    <div class="canvas-panel full-width">
+                        <h4>通视分析 - 视野覆盖范围</h4>
+                        <canvas id="visionCanvas" width="900" height="600"></canvas>
+                    </div>
+                </div>
+                <div class="vision-stats" id="visionStats">
+                    <div class="stat-item">
+                        <label>可见点数</label>
+                        <span id="visiblePoints">--</span>
+                    </div>
+                    <div class="stat-item">
+                        <label>总分析点</label>
+                        <span id="totalPoints">--</span>
+                    </div>
+                    <div class="stat-item">
+                        <label>覆盖率</label>
+                        <span id="coverageRatio">--</span>
+                    </div>
+                    <div class="stat-item">
+                        <label>最大可视距离</label>
+                        <span id="maxVisDist">--</span>
+                    </div>
+                    <div class="stat-item">
+                        <label>理论视距</label>
+                        <span id="theoreticalHorizon">--</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <aside class="sidebar sidebar-right">
+            <div class="panel">
+                <h3>🔔 实时告警</h3>
+                <div id="alertList" class="alert-list">
+                    <div class="no-alerts">暂无告警</div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h3>仿真结果摘要</h3>
+                <div id="simSummary" class="sim-summary">
+                    <p>请选择巢车并运行仿真</p>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h3>视野分析摘要</h3>
+                <div id="visionSummary" class="sim-summary">
+                    <p>请运行视野分析</p>
+                </div>
+            </div>
+        </aside>
+    </main>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sockjs/1.6.1/sockjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+    <script src="js/nestcart3d.js"></script>
+    <script src="js/structure-canvas.js"></script>
+    <script src="js/vision-canvas.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
