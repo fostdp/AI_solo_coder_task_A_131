@@ -23,6 +23,7 @@ public class VisionAnalysisService {
     private final NestCartRepository nestCartRepository;
     private final TerrainElevationRepository terrainElevationRepository;
     private final VisionAnalysisResultRepository visionAnalysisResultRepository;
+    private final TerrainQuadtreeService terrainQuadtreeService;
 
     @Value("${nestcart.vision.earth-radius:6371000.0}")
     private double earthRadius;
@@ -32,6 +33,9 @@ public class VisionAnalysisService {
 
     @Value("${nestcart.vision.max-analysis-radius:5000.0}")
     private double maxAnalysisRadius;
+
+    @Value("${nestcart.vision.use-quadtree:true}")
+    private boolean useQuadtree;
 
     public VisionResult analyzeVision(UUID cartId, Double height, String regionName,
                                        Integer observerGridX, Integer observerGridY) {
@@ -66,38 +70,62 @@ public class VisionAnalysisService {
                 Math.max(100, 100)
         );
 
-        List<int[]> visiblePoints = new ArrayList<>();
-        List<int[]> blockedPoints = new ArrayList<>();
-        double maxVisibleDistance = 0.0;
+        if (useQuadtree && !terrainQuadtreeService.isTreeBuilt(effectiveRegion)) {
+            terrainQuadtreeService.buildTree(effectiveRegion, terrain);
+            log.info("四叉树索引已构建: region={}, 地形点数={}", effectiveRegion, terrain.size());
+        }
 
-        for (int dx = -maxGridRadius; dx <= maxGridRadius; dx++) {
-            for (int dy = -maxGridRadius; dy <= maxGridRadius; dy++) {
-                if (dx == 0 && dy == 0) continue;
+        List<int[]> visiblePoints;
+        List<int[]> blockedPoints;
+        double maxVisibleDistance;
 
-                int targetX = obsX + dx;
-                int targetY = obsY + dy;
+        long startTime = System.currentTimeMillis();
 
-                String key = targetX + "," + targetY;
-                if (!terrainMap.containsKey(key)) continue;
+        if (useQuadtree) {
+            visiblePoints = new ArrayList<>();
+            blockedPoints = new ArrayList<>();
+            maxVisibleDistance = analyzeWithQuadtree(effectiveRegion, obsX, obsY,
+                    observerTotalHeight, maxGridRadius,
+                    visiblePoints, blockedPoints);
+        } else {
+            visiblePoints = new ArrayList<>();
+            blockedPoints = new ArrayList<>();
+            maxVisibleDistance = 0.0;
 
-                double distance = Math.sqrt(dx * dx + dy * dy) * defaultGridResolution;
-                if (distance > maxAnalysisRadius) continue;
+            for (int dx = -maxGridRadius; dx <= maxGridRadius; dx++) {
+                for (int dy = -maxGridRadius; dy <= maxGridRadius; dy++) {
+                    if (dx == 0 && dy == 0) continue;
 
-                if (isLineOfSightClear(terrainMap, obsX, obsY, observerTotalHeight,
-                        targetX, targetY, distance)) {
-                    visiblePoints.add(new int[]{targetX, targetY});
-                    maxVisibleDistance = Math.max(maxVisibleDistance, distance);
-                } else {
-                    blockedPoints.add(new int[]{targetX, targetY});
+                    int targetX = obsX + dx;
+                    int targetY = obsY + dy;
+
+                    String key = targetX + "," + targetY;
+                    if (!terrainMap.containsKey(key)) continue;
+
+                    double distance = Math.sqrt(dx * dx + dy * dy) * defaultGridResolution;
+                    if (distance > maxAnalysisRadius) continue;
+
+                    if (isLineOfSightClear(terrainMap, obsX, obsY, observerTotalHeight,
+                            targetX, targetY, distance)) {
+                        visiblePoints.add(new int[]{targetX, targetY});
+                        maxVisibleDistance = Math.max(maxVisibleDistance, distance);
+                    } else {
+                        blockedPoints.add(new int[]{targetX, targetY});
+                    }
                 }
             }
         }
 
+        long elapsed = System.currentTimeMillis() - startTime;
+        log.debug("通视分析完成: 方法={}, 可见点={}, 总点={}, 耗时={}ms",
+                useQuadtree ? "quadtree" : "bresenham",
+                visiblePoints.size(), visiblePoints.size() + blockedPoints.size(), elapsed);
+
         int totalAnalyzed = visiblePoints.size() + blockedPoints.size();
         double coverageRatio = totalAnalyzed > 0 ? (double) visiblePoints.size() / totalAnalyzed : 0.0;
 
-        List<VisionResult.SectorAnalysis> sectorAnalyses = analyzeSectors(
-                terrainMap, obsX, obsY, observerTotalHeight, maxGridRadius);
+        List<VisionResult.SectorAnalysis> sectorAnalyses = analyzeSectorsWithQuadtree(
+                effectiveRegion, terrainMap, obsX, obsY, observerTotalHeight, maxGridRadius);
 
         VisionResult result = VisionResult.builder()
                 .cartId(cartId)
@@ -116,6 +144,131 @@ public class VisionAnalysisService {
         saveAnalysisResult(cartId, effectiveHeight, result);
 
         return result;
+    }
+
+    private double analyzeWithQuadtree(String regionName,
+                                        int obsX, int obsY, double obsHeight,
+                                        int maxRadius,
+                                        List<int[]> visiblePoints,
+                                        List<int[]> blockedPoints) {
+        TerrainQuadtreeService.QuadTreeNode root = terrainQuadtreeService.getRootNode(regionName);
+        if (root == null) return 0.0;
+
+        double[] maxVisibleDist = new double[]{0.0};
+
+        analyzeNodeVisibility(root, obsX, obsY, obsHeight,
+                maxRadius, defaultGridResolution,
+                visiblePoints, blockedPoints, maxVisibleDist);
+
+        return maxVisibleDist[0];
+    }
+
+    private void analyzeNodeVisibility(TerrainQuadtreeService.QuadTreeNode node,
+                                        int obsX, int obsY, double obsHeight,
+                                        int maxRadius, double resolution,
+                                        List<int[]> visiblePoints,
+                                        List<int[]> blockedPoints,
+                                        double[] maxVisibleDist) {
+        double centerX = (node.minX + node.maxX) / 2.0;
+        double centerY = (node.minY + node.maxY) / 2.0;
+        double dist = Math.sqrt((centerX - obsX) * (centerX - obsX)
+                + (centerY - obsY) * (centerY - obsY));
+        double nodeRadius = Math.sqrt(
+                (node.maxX - node.minX) * (node.maxX - node.minX)
+                        + (node.maxY - node.minY) * (node.maxY - node.minY)
+        ) / 2.0;
+
+        if (dist - nodeRadius > maxRadius) {
+            return;
+        }
+
+        double minLOSHeight = getMinLOSHeightToNode(node, obsX, obsY, obsHeight);
+        double maxLOSHeight = getMaxLOSHeightToNode(node, obsX, obsY, obsHeight);
+
+        if (node.maxElevation <= minLOSHeight && dist > 0) {
+            int width = node.maxX - node.minX + 1;
+            int height = node.maxY - node.minY + 1;
+            for (int x = node.minX; x <= node.maxX; x++) {
+                for (int y = node.minY; y <= node.maxY; y++) {
+                    if (x == obsX && y == obsY) continue;
+                    double d = Math.sqrt((x - obsX) * (x - obsX) + (y - obsY) * (y - obsY));
+                    if (d <= maxRadius) {
+                        visiblePoints.add(new int[]{x, y});
+                        maxVisibleDist[0] = Math.max(maxVisibleDist[0], d * resolution);
+                    }
+                }
+            }
+            return;
+        }
+
+        if (node.minElevation > maxLOSHeight && dist > 0) {
+            int width = node.maxX - node.minX + 1;
+            int height = node.maxY - node.minY + 1;
+            for (int x = node.minX; x <= node.maxX; x++) {
+                for (int y = node.minY; y <= node.maxY; y++) {
+                    if (x == obsX && y == obsY) continue;
+                    double d = Math.sqrt((x - obsX) * (x - obsX) + (y - obsY) * (y - obsY));
+                    if (d <= maxRadius) {
+                        blockedPoints.add(new int[]{x, y});
+                    }
+                }
+            }
+            return;
+        }
+
+        if (node.isLeaf || node.children == null) {
+            for (int x = node.minX; x <= node.maxX; x++) {
+                for (int y = node.minY; y <= node.maxY; y++) {
+                    if (x == obsX && y == obsY) continue;
+                    double d = Math.sqrt((x - obsX) * (x - obsX) + (y - obsY) * (y - obsY));
+                    if (d > maxRadius) continue;
+
+                    if (terrainQuadtreeService.isLineOfSightClear(
+                            node, obsX, obsY, obsHeight, x, y, resolution)) {
+                        visiblePoints.add(new int[]{x, y});
+                        maxVisibleDist[0] = Math.max(maxVisibleDist[0], d * resolution);
+                    } else {
+                        blockedPoints.add(new int[]{x, y});
+                    }
+                }
+            }
+            return;
+        }
+
+        for (TerrainQuadtreeService.QuadTreeNode child : node.children) {
+            if (child != null) {
+                analyzeNodeVisibility(child, obsX, obsY, obsHeight,
+                        maxRadius, resolution,
+                        visiblePoints, blockedPoints, maxVisibleDist);
+            }
+        }
+    }
+
+    private double getMinLOSHeightToNode(TerrainQuadtreeService.QuadTreeNode node,
+                                          int obsX, int obsY, double obsHeight) {
+        double minH = Double.MAX_VALUE;
+        int[][] corners = {
+                {node.minX, node.minY},
+                {node.maxX, node.minY},
+                {node.minX, node.maxY},
+                {node.maxX, node.maxY}
+        };
+        for (int[] corner : corners) {
+            double dist = Math.sqrt(
+                    (corner[0] - obsX) * (corner[0] - obsX)
+                            + (corner[1] - obsY) * (corner[1] - obsY)
+            );
+            if (dist > 0) {
+                double h = obsHeight - 0.0 * dist;
+                minH = Math.min(minH, h);
+            }
+        }
+        return minH;
+    }
+
+    private double getMaxLOSHeightToNode(TerrainQuadtreeService.QuadTreeNode node,
+                                          int obsX, int obsY, double obsHeight) {
+        return obsHeight;
     }
 
     private boolean isLineOfSightClear(Map<String, TerrainElevation> terrainMap,
@@ -175,10 +328,13 @@ public class VisionAnalysisService {
         return true;
     }
 
-    private List<VisionResult.SectorAnalysis> analyzeSectors(Map<String, TerrainElevation> terrainMap,
-                                                              int obsX, int obsY,
-                                                              double observerTotalHeight,
-                                                              int maxGridRadius) {
+    private List<VisionResult.SectorAnalysis> analyzeSectorsWithQuadtree(
+            String regionName,
+            Map<String, TerrainElevation> terrainMap,
+            int obsX, int obsY,
+            double observerTotalHeight,
+            int maxGridRadius) {
+
         List<VisionResult.SectorAnalysis> sectors = new ArrayList<>();
         int sectorCount = 36;
         double sectorAngle = 360.0 / sectorCount;
@@ -192,22 +348,44 @@ public class VisionAnalysisService {
             double minElev = Double.MAX_VALUE;
             double maxElev = Double.MIN_VALUE;
 
-            for (int r = 1; r <= maxGridRadius; r++) {
-                int checkX = obsX + (int) Math.round(r * Math.cos(azimuthRad));
-                int checkY = obsY + (int) Math.round(r * Math.sin(azimuthRad));
+            if (useQuadtree && terrainQuadtreeService.isTreeBuilt(regionName)) {
+                for (int r = 1; r <= maxGridRadius; r++) {
+                    int checkX = obsX + (int) Math.round(r * Math.cos(azimuthRad));
+                    int checkY = obsY + (int) Math.round(r * Math.sin(azimuthRad));
 
-                double elev = getElevation(terrainMap, checkX, checkY);
-                minElev = Math.min(minElev, elev);
-                maxElev = Math.max(maxElev, elev);
+                    double elev = getElevation(terrainMap, checkX, checkY);
+                    minElev = Math.min(minElev, elev);
+                    maxElev = Math.max(maxElev, elev);
 
-                double distance = r * defaultGridResolution;
+                    double distance = r * defaultGridResolution;
 
-                if (isLineOfSightClear(terrainMap, obsX, obsY, observerTotalHeight,
-                        checkX, checkY, distance)) {
-                    maxVisibleDist = distance;
-                } else {
-                    blocked = true;
-                    break;
+                    if (terrainQuadtreeService.isLineOfSightClear(regionName,
+                            obsX, obsY, observerTotalHeight,
+                            checkX, checkY, elev, defaultGridResolution)) {
+                        maxVisibleDist = distance;
+                    } else {
+                        blocked = true;
+                        break;
+                    }
+                }
+            } else {
+                for (int r = 1; r <= maxGridRadius; r++) {
+                    int checkX = obsX + (int) Math.round(r * Math.cos(azimuthRad));
+                    int checkY = obsY + (int) Math.round(r * Math.sin(azimuthRad));
+
+                    double elev = getElevation(terrainMap, checkX, checkY);
+                    minElev = Math.min(minElev, elev);
+                    maxElev = Math.max(maxElev, elev);
+
+                    double distance = r * defaultGridResolution;
+
+                    if (isLineOfSightClear(terrainMap, obsX, obsY, observerTotalHeight,
+                            checkX, checkY, distance)) {
+                        maxVisibleDist = distance;
+                    } else {
+                        blocked = true;
+                        break;
+                    }
                 }
             }
 

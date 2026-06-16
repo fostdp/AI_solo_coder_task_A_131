@@ -9,6 +9,7 @@ class NestCart3D {
         this.wireframeGroup = null;
         this.terrainMesh = null;
         this.animationId = null;
+
         this.showVisionCone = true;
         this.showWireframe = true;
         this.showTerrain = true;
@@ -16,6 +17,10 @@ class NestCart3D {
         this.windSpeed = 5;
         this.windDirection = 0;
         this.swayAngle = 0;
+
+        this.transparentObjects = [];
+        this.opaqueScene = null;
+
         this.init();
     }
 
@@ -31,11 +36,15 @@ class NestCart3D {
         this.camera.position.set(15, 12, 15);
         this.camera.lookAt(0, 5, 0);
 
-        this.renderer = new THREE.WebGLRenderer({ antialias: true });
+        this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
         this.renderer.setSize(w, h);
         this.renderer.setPixelRatio(window.devicePixelRatio);
         this.renderer.shadowMap.enabled = true;
+        this.renderer.autoClear = true;
+        this.renderer.sortObjects = false;
         this.container.appendChild(this.renderer.domElement);
+
+        this.setupOIT(w, h);
 
         this.addLights();
         this.addGrid();
@@ -52,6 +61,151 @@ class NestCart3D {
 
         window.addEventListener('resize', () => this.onResize());
         this.animate();
+    }
+
+    createOITMaterial(color, opacity, useFresnel = true) {
+        return new THREE.ShaderMaterial({
+            uniforms: {
+                uColor: { value: new THREE.Color(color) },
+                uOpacity: { value: opacity }
+            },
+            vertexShader: `
+                varying vec3 vNormal;
+                varying vec3 vViewDir;
+                varying float vDepth;
+                void main() {
+                    vNormal = normalize(normalMatrix * normal);
+                    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                    vViewDir = normalize(-mvPosition.xyz);
+                    vDepth = -mvPosition.z;
+                    gl_Position = projectionMatrix * mvPosition;
+                }
+            `,
+            fragmentShader: `
+                uniform vec3 uColor;
+                uniform float uOpacity;
+                varying vec3 vNormal;
+                varying vec3 vViewDir;
+                varying float vDepth;
+
+                void main() {
+                    float alpha = uOpacity;
+                    float fresnel = pow(1.0 - abs(dot(vNormal, vViewDir)), 2.0);
+                    alpha = uOpacity * (0.6 + fresnel * 0.4);
+
+                    float z = gl_FragCoord.z;
+                    float weight = pow(1.0 - z, 4.0) * 100.0;
+
+                    vec3 accumColor = uColor * alpha * weight;
+                    float reveal = alpha * weight;
+
+                    gl_FragColor = vec4(accumColor, reveal);
+                }
+            `,
+            transparent: true,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            side: THREE.DoubleSide
+        });
+    }
+
+    createOITLineMaterial(color, opacity) {
+        return new THREE.ShaderMaterial({
+            uniforms: {
+                uColor: { value: new THREE.Color(color) },
+                uOpacity: { value: opacity }
+            },
+            vertexShader: `
+                varying float vDepth;
+                void main() {
+                    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                    vDepth = -mvPosition.z;
+                    gl_Position = projectionMatrix * mvPosition;
+                }
+            `,
+            fragmentShader: `
+                uniform vec3 uColor;
+                uniform float uOpacity;
+                varying float vDepth;
+
+                void main() {
+                    float alpha = uOpacity;
+
+                    float z = gl_FragCoord.z;
+                    float weight = pow(1.0 - z, 4.0) * 100.0;
+
+                    vec3 accumColor = uColor * alpha * weight;
+                    float reveal = alpha * weight;
+
+                    gl_FragColor = vec4(accumColor, reveal);
+                }
+            `,
+            transparent: true,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false
+        });
+    }
+
+    setupOIT(w, h) {
+        const dpr = window.devicePixelRatio || 1;
+        const width = Math.floor(w * dpr);
+        const height = Math.floor(h * dpr);
+
+        this.opaqueTarget = new THREE.WebGLRenderTarget(width, height, {
+            minFilter: THREE.LinearFilter,
+            magFilter: THREE.LinearFilter,
+            format: THREE.RGBAFormat,
+            type: THREE.HalfFloatType,
+            depthBuffer: true
+        });
+
+        this.accumulateTarget = new THREE.WebGLRenderTarget(width, height, {
+            minFilter: THREE.LinearFilter,
+            magFilter: THREE.LinearFilter,
+            format: THREE.RGBAFormat,
+            type: THREE.HalfFloatType,
+            depthBuffer: false
+        });
+
+        this.oitCompositeMaterial = new THREE.ShaderMaterial({
+            uniforms: {
+                tAccum: { value: this.accumulateTarget.texture },
+                tOpaque: { value: this.opaqueTarget.texture }
+            },
+            vertexShader: `
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    gl_Position = vec4(position.xy, 0.0, 1.0);
+                }
+            `,
+            fragmentShader: `
+                uniform sampler2D tAccum;
+                uniform sampler2D tOpaque;
+                varying vec2 vUv;
+
+                void main() {
+                    vec4 accum = texture2D(tAccum, vUv);
+                    float revealage = accum.a;
+                    vec4 opaqueColor = texture2D(tOpaque, vUv);
+
+                    vec3 transColor = accum.rgb / max(revealage, 0.001);
+
+                    vec3 finalColor = mix(opaqueColor.rgb, transColor, 1.0 - revealage);
+
+                    gl_FragColor = vec4(finalColor, 1.0);
+                }
+            `,
+            depthTest: false,
+            depthWrite: false
+        });
+
+        this.orthoScene = new THREE.Scene();
+        const quadGeo = new THREE.PlaneGeometry(2, 2);
+        this.quad = new THREE.Mesh(quadGeo, this.oitCompositeMaterial);
+        this.orthoScene.add(this.quad);
+
+        this.orthoCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
     }
 
     addLights() {
@@ -93,6 +247,7 @@ class NestCart3D {
         const baseMesh = new THREE.Mesh(baseGeo, darkWoodMat);
         baseMesh.position.y = 0.15;
         baseMesh.castShadow = true;
+        baseMesh.renderOrder = 0;
         this.cartGroup.add(baseMesh);
 
         for (let i = 0; i < 4; i++) {
@@ -102,17 +257,8 @@ class NestCart3D {
             const xPos = (i < 2 ? -1.5 : 1.5);
             const zPos = (i % 2 === 0 ? -1.2 : 1.2);
             wheel.position.set(xPos, 0.5, zPos);
+            wheel.renderOrder = 0;
             this.cartGroup.add(wheel);
-
-            const spokeGeo = new THREE.BoxGeometry(0.8, 0.05, 0.05);
-            for (let s = 0; s < 4; s++) {
-                const spoke = new THREE.Mesh(spokeGeo, darkWoodMat);
-                spoke.rotation.x = (s * Math.PI) / 4;
-                spoke.position.copy(wheel.position);
-                spoke.rotation.z = Math.PI / 2;
-                spoke.rotation.y = (s * Math.PI) / 4;
-                this.cartGroup.add(spoke);
-            }
         }
 
         const mastGeo = new THREE.CylinderGeometry(0.12, 0.15, this.currentHeight, 8);
@@ -120,6 +266,7 @@ class NestCart3D {
         mast.position.y = 0.3 + this.currentHeight / 2;
         mast.castShadow = true;
         mast.name = 'mast';
+        mast.renderOrder = 0;
         this.cartGroup.add(mast);
 
         for (let i = 1; i <= 3; i++) {
@@ -135,6 +282,7 @@ class NestCart3D {
             brace.rotation.z = Math.cos(angle) * 0.3;
             brace.rotation.x = Math.sin(angle) * 0.3;
             brace.name = 'brace';
+            brace.renderOrder = 0;
             this.cartGroup.add(brace);
         }
 
@@ -149,26 +297,31 @@ class NestCart3D {
         boom.rotation.z = -Math.PI / 2;
         boom.position.x = boomLength / 2;
         boom.castShadow = true;
+        boom.renderOrder = 0;
         boomPivot.add(boom);
 
         const boomCounterGeo = new THREE.CylinderGeometry(0.05, 0.06, 2, 8);
         const counterBoom = new THREE.Mesh(boomCounterGeo, metalMat);
         counterBoom.rotation.z = Math.PI / 2;
         counterBoom.position.x = -1;
+        counterBoom.renderOrder = 0;
         boomPivot.add(counterBoom);
 
         const counterWeightGeo = new THREE.BoxGeometry(0.6, 0.6, 0.6);
         const counterWeight = new THREE.Mesh(counterWeightGeo, darkWoodMat);
         counterWeight.position.set(-2, 0, 0);
+        counterWeight.renderOrder = 0;
         boomPivot.add(counterWeight);
 
         const ropeGeo = new THREE.CylinderGeometry(0.02, 0.02, 2, 6);
         const ropeMat = new THREE.MeshPhongMaterial({ color: 0xAA8844 });
         const rope1 = new THREE.Mesh(ropeGeo, ropeMat);
         rope1.position.set(boomLength - 0.5, -1.2, 0.3);
+        rope1.renderOrder = 0;
         boomPivot.add(rope1);
         const rope2 = new THREE.Mesh(ropeGeo, ropeMat);
         rope2.position.set(boomLength - 0.5, -1.2, -0.3);
+        rope2.renderOrder = 0;
         boomPivot.add(rope2);
 
         const basketGroup = new THREE.Group();
@@ -176,19 +329,17 @@ class NestCart3D {
         basketGroup.name = 'basket';
 
         const basketGeo = new THREE.BoxGeometry(1.5, 1.0, 1.5);
-        const basketMat = new THREE.MeshPhongMaterial({
-            color: 0xA0782C,
-            transparent: true,
-            opacity: 0.7,
-            side: THREE.DoubleSide
-        });
+        const basketMat = this.createOITMaterial(0xA0782C, 0.5);
         const basket = new THREE.Mesh(basketGeo, basketMat);
         basket.position.y = -0.5;
+        basket.renderOrder = 10;
         basketGroup.add(basket);
+        this.registerTransparent(basket);
 
         const railGeo = new THREE.BoxGeometry(1.6, 0.08, 1.6);
         const rail = new THREE.Mesh(railGeo, woodMat);
         rail.position.y = 0.05;
+        rail.renderOrder = 0;
         basketGroup.add(rail);
 
         boomPivot.add(basketGroup);
@@ -201,17 +352,19 @@ class NestCart3D {
 
     buildWireframe(boomLength, pivotY) {
         if (this.wireframeGroup) {
+            this.wireframeGroup.traverse(obj => {
+                if (obj.isLine) {
+                    const idx = this.transparentObjects.indexOf(obj);
+                    if (idx >= 0) this.transparentObjects.splice(idx, 1);
+                }
+            });
             this.cartGroup.remove(this.wireframeGroup);
         }
 
         this.wireframeGroup = new THREE.Group();
         this.wireframeGroup.name = 'wireframe';
 
-        const lineMat = new THREE.LineBasicMaterial({
-            color: 0x3b82f6,
-            transparent: true,
-            opacity: 0.6
-        });
+        const lineMat = this.createOITLineMaterial(0x3b82f6, 0.6);
 
         const segments = 20;
         const segLength = boomLength / segments;
@@ -225,34 +378,38 @@ class NestCart3D {
             vertGeo.setAttribute('position', new THREE.Float32BufferAttribute([
                 x, topY, 0, x, botY, 0
             ], 3));
-            this.wireframeGroup.add(new THREE.Line(vertGeo, lineMat));
+            const line1 = new THREE.Line(vertGeo, lineMat);
+            line1.renderOrder = 5;
+            this.wireframeGroup.add(line1);
 
             if (i < segments) {
                 const topGeo = new THREE.BufferGeometry();
                 topGeo.setAttribute('position', new THREE.Float32BufferAttribute([
                     x, topY, 0, x + segLength, topY, 0
                 ], 3));
-                this.wireframeGroup.add(new THREE.Line(topGeo, lineMat));
+                const line2 = new THREE.Line(topGeo, lineMat);
+                line2.renderOrder = 5;
+                this.wireframeGroup.add(line2);
 
                 const botGeo = new THREE.BufferGeometry();
                 botGeo.setAttribute('position', new THREE.Float32BufferAttribute([
                     x, botY, 0, x + segLength, botY, 0
                 ], 3));
-                this.wireframeGroup.add(new THREE.Line(botGeo, lineMat));
+                const line3 = new THREE.Line(botGeo, lineMat);
+                line3.renderOrder = 5;
+                this.wireframeGroup.add(line3);
 
                 const diagGeo = new THREE.BufferGeometry();
                 diagGeo.setAttribute('position', new THREE.Float32BufferAttribute([
                     x, topY, 0, x + segLength, botY, 0
                 ], 3));
-                this.wireframeGroup.add(new THREE.Line(diagGeo, lineMat));
+                const line4 = new THREE.Line(diagGeo, lineMat);
+                line4.renderOrder = 5;
+                this.wireframeGroup.add(line4);
             }
         }
 
-        const stressMat = new THREE.LineBasicMaterial({
-            color: 0x10b981,
-            transparent: true,
-            opacity: 0.8
-        });
+        const stressMat = this.createOITLineMaterial(0x10b981, 0.8);
 
         this.stressIndicators = [];
         for (let i = 0; i < segments; i++) {
@@ -262,39 +419,31 @@ class NestCart3D {
                 x, pivotY, 0, x, pivotY + 0.5, 0
             ], 3));
             const indicator = new THREE.Line(indicatorGeo, stressMat.clone());
+            indicator.renderOrder = 5;
             this.stressIndicators.push(indicator);
             this.wireframeGroup.add(indicator);
+            this.registerTransparent(indicator);
         }
+
+        this.wireframeGroup.traverse(obj => {
+            if (obj.isLine && obj !== this.stressIndicators.find(i => i === obj)) {
+                this.registerTransparent(obj);
+            }
+        });
 
         this.cartGroup.add(this.wireframeGroup);
     }
 
-    updateStressIndicators(beamElements) {
-        if (!this.stressIndicators || !beamElements) return;
-
-        beamElements.forEach((elem, i) => {
-            if (i >= this.stressIndicators.length) return;
-            const ratio = elem.stress / 8e6;
-            const indicator = this.stressIndicators[i];
-            const mat = indicator.material;
-
-            if (ratio > 0.95) {
-                mat.color.setHex(0xef4444);
-            } else if (ratio > 0.8) {
-                mat.color.setHex(0xf59e0b);
-            } else {
-                mat.color.setHex(0x10b981);
-            }
-
-            const positions = indicator.geometry.attributes.position.array;
-            positions[4] = 0.08 + ratio * 0.8;
-            positions[5] = 0;
-            indicator.geometry.attributes.position.needsUpdate = true;
-        });
+    registerTransparent(mesh) {
+        this.transparentObjects.push(mesh);
     }
 
     buildVisionCone() {
         if (this.visionCone) {
+            this.visionCone.traverse(obj => {
+                const idx = this.transparentObjects.indexOf(obj);
+                if (idx >= 0) this.transparentObjects.splice(idx, 1);
+            });
             this.scene.remove(this.visionCone);
         }
 
@@ -305,29 +454,33 @@ class NestCart3D {
         const coneGeo = new THREE.ConeGeometry(
             Math.max(0.1, radius),
             Math.max(0.1, coneHeight),
-            36, 1, true
+            64, 6, true
         );
 
-        const coneMat = new THREE.MeshPhongMaterial({
-            color: 0x06b6d4,
-            transparent: true,
-            opacity: 0.15,
-            side: THREE.DoubleSide,
-            depthWrite: false
-        });
-
+        const coneMat = this.createOITMaterial(0x06b6d4, 0.18);
         this.visionCone = new THREE.Mesh(coneGeo, coneMat);
         this.visionCone.position.set(8, height * 0.85 + 0.3, 0);
         this.visionCone.rotation.x = Math.PI;
+        this.visionCone.renderOrder = 100;
+        this.registerTransparent(this.visionCone);
 
-        const edgeMat = new THREE.LineBasicMaterial({
-            color: 0x06b6d4,
-            transparent: true,
-            opacity: 0.4
-        });
+        const edgeMat = this.createOITLineMaterial(0x06b6d4, 0.3);
         const edgeGeo = new THREE.EdgesGeometry(coneGeo);
         const edgeLines = new THREE.LineSegments(edgeGeo, edgeMat);
+        edgeLines.renderOrder = 101;
         this.visionCone.add(edgeLines);
+        this.registerTransparent(edgeLines);
+
+        const innerConeGeo = new THREE.ConeGeometry(
+            Math.max(0.05, radius * 0.5),
+            Math.max(0.1, coneHeight),
+            32, 4, true
+        );
+        const innerConeMat = this.createOITMaterial(0xffffff, 0.06);
+        const innerCone = new THREE.Mesh(innerConeGeo, innerConeMat);
+        innerCone.renderOrder = 99;
+        this.visionCone.add(innerCone);
+        this.registerTransparent(innerCone);
 
         this.scene.add(this.visionCone);
     }
@@ -367,6 +520,7 @@ class NestCart3D {
 
         this.terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
         this.terrainMesh.position.y = -0.5;
+        this.terrainMesh.renderOrder = 0;
         this.scene.add(this.terrainMesh);
     }
 
@@ -422,12 +576,84 @@ class NestCart3D {
         const boomPivot = this.cartGroup.getObjectByName('boomPivot');
         if (boomPivot && data.totalDeflection) {
             const swayRad = Math.atan2(data.totalDeflection, 8) * 0.5;
-            boomPivot.rotation.z = swayRad * Math.sin(Date.now() * 0.001);
+            boomPivot.userData.targetSway = swayRad;
         }
 
         if (data.beamElements) {
             this.updateStressIndicators(data.beamElements);
         }
+    }
+
+    updateStressIndicators(beamElements) {
+        if (!this.stressIndicators || !beamElements) return;
+
+        beamElements.forEach((elem, i) => {
+            if (i >= this.stressIndicators.length) return;
+            const ratio = elem.stress / 8e6;
+            const indicator = this.stressIndicators[i];
+            const mat = indicator.material;
+
+            let colorHex = 0x10b981;
+            if (ratio > 0.95) {
+                colorHex = 0xef4444;
+            } else if (ratio > 0.8) {
+                colorHex = 0xf59e0b;
+            }
+
+            if (mat.uniforms && mat.uniforms.uColor) {
+                mat.uniforms.uColor.value.setHex(colorHex);
+            } else if (mat.color) {
+                mat.color.setHex(colorHex);
+            }
+
+            const positions = indicator.geometry.attributes.position.array;
+            positions[4] = 0.08 + ratio * 0.8;
+            positions[5] = 0;
+            indicator.geometry.attributes.position.needsUpdate = true;
+        });
+    }
+
+    renderOIT() {
+        const prevAutoClear = this.renderer.autoClear;
+        const prevSortObjects = this.renderer.sortObjects;
+        this.renderer.sortObjects = false;
+
+        this.renderer.setRenderTarget(this.opaqueTarget);
+        this.renderer.setClearColor(0x050810, 1);
+        this.renderer.clear();
+
+        this.transparentObjects.forEach(mesh => {
+            mesh.userData.wasVisible = mesh.visible;
+            mesh.visible = false;
+        });
+
+        this.renderer.autoClear = true;
+        this.renderer.render(this.scene, this.camera);
+
+        this.transparentObjects.forEach(mesh => {
+            mesh.visible = mesh.userData.wasVisible !== false;
+        });
+
+        this.renderer.setRenderTarget(this.accumulateTarget);
+        this.renderer.setClearColor(0, 0, 0, 0);
+        this.renderer.clear();
+
+        this.renderer.autoClear = false;
+        this.renderer.setBlending(THREE.AdditiveBlending);
+
+        this.transparentObjects.forEach(mesh => {
+            if (mesh.visible && mesh.material && mesh.material.uniforms) {
+                this.renderer.render(mesh, this.camera);
+            }
+        });
+
+        this.renderer.setBlending(THREE.NormalBlending);
+        this.renderer.autoClear = prevAutoClear;
+        this.renderer.sortObjects = prevSortObjects;
+
+        this.renderer.setRenderTarget(null);
+        this.renderer.setClearColor(0x050810, 1);
+        this.renderer.render(this.orthoScene, this.orthoCamera);
     }
 
     animate() {
@@ -436,20 +662,20 @@ class NestCart3D {
         const time = Date.now() * 0.001;
         this.swayAngle = Math.sin(time * 0.5) * 0.01 * (1 + this.windSpeed * 0.02);
 
-        const boomPivot = this.cartGroup.getObjectByName('boomPivot');
+        const boomPivot = this.cartGroup && this.cartGroup.getObjectByName('boomPivot');
         if (boomPivot) {
-            boomPivot.rotation.z += (this.swayAngle - boomPivot.rotation.z) * 0.05;
+            const targetSway = boomPivot.userData.targetSway || this.swayAngle;
+            boomPivot.rotation.z += (targetSway * Math.sin(time) - boomPivot.rotation.z) * 0.05;
             boomPivot.rotation.x = Math.sin(time * 0.3) * 0.005 * this.windSpeed;
         }
 
-        const basket = this.cartGroup.getObjectByName('basket');
+        const basket = this.cartGroup && this.cartGroup.getObjectByName('basket');
         if (basket) {
             basket.rotation.y = Math.sin(time * 0.7) * 0.02 * (1 + this.windSpeed * 0.1);
         }
 
         if (this.visionCone) {
             this.visionCone.visible = this.showVisionCone;
-            this.visionCone.material.opacity = 0.1 + Math.sin(time) * 0.03;
         }
 
         if (this.wireframeGroup) {
@@ -466,7 +692,7 @@ class NestCart3D {
         this.camera.position.z = dist * Math.cos(this.rotY) * Math.cos(this.rotX);
         this.camera.lookAt(0, 5, 0);
 
-        this.renderer.render(this.scene, this.camera);
+        this.renderOIT();
     }
 
     onResize() {
@@ -475,6 +701,14 @@ class NestCart3D {
         this.camera.aspect = w / h;
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(w, h);
+
+        const dpr = window.devicePixelRatio || 1;
+        const width = Math.floor(w * dpr);
+        const height = Math.floor(h * dpr);
+
+        this.opaqueTarget.setSize(width, height);
+        this.accumulateTarget.setSize(width, height);
+        this.revealageTarget.setSize(width, height);
     }
 
     destroy() {

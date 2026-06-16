@@ -35,6 +35,12 @@ public class SimulationResult {
 
     private Double safetyFactor;
 
+    private Double gustFactor;
+    private Double gustStress;
+    private Double turbulenceIntensity;
+    private Double gustResponseFactor;
+    private Double peakGustWindSpeed;
+
     @Data
     @Builder
     @NoArgsConstructor

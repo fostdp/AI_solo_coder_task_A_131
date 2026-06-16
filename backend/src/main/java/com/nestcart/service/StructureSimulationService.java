@@ -22,6 +22,7 @@ public class StructureSimulationService {
 
     private final NestCartRepository nestCartRepository;
     private final SensorDataRepository sensorDataRepository;
+    private final DavenportWindSpectrumService davenportService;
 
     @Value("${nestcart.simulation.wind-load-coefficient:1.2}")
     private double windLoadCoefficient;
@@ -62,8 +63,17 @@ public class StructureSimulationService {
 
         double gravityLoad = basketWeight * gravity;
 
-        double windForcePerLength = calculateWindLoadPerUnitLength(effectiveWindSpeed, area, boomLength);
-        double totalWindForce = windForcePerLength * boomLength;
+        double turbulenceIntensity = davenportService.calculateTurbulenceIntensity(effectiveHeight);
+        double gustFactor = davenportService.calculateGustLoadFactor(effectiveWindSpeed, effectiveHeight);
+        double gustResponseFactor = davenportService.calculateGustFactor(effectiveWindSpeed, effectiveHeight);
+        double peakGustWindSpeed = effectiveWindSpeed * gustFactor;
+
+        double staticWindForcePerLength = calculateWindLoadPerUnitLength(effectiveWindSpeed, area, boomLength);
+        double dynamicWindForcePerLength = calculateDynamicWindLoad(
+                effectiveWindSpeed, area, boomLength, effectiveHeight, gustResponseFactor);
+
+        double totalWindForcePerLength = staticWindForcePerLength + dynamicWindForcePerLength;
+        double totalWindForce = totalWindForcePerLength * boomLength;
 
         List<SimulationResult.BeamElementResult> beamElements = new ArrayList<>();
         double maxStress = 0.0;
@@ -78,8 +88,8 @@ public class StructureSimulationService {
             double gravityMoment = gravityLoad * x;
             double gravityAxial = 0.0;
 
-            double windShear = windForcePerLength * (boomLength - x);
-            double windMoment = windForcePerLength * (boomLength - x) * (boomLength - x) / 2.0;
+            double windShear = totalWindForcePerLength * (boomLength - x);
+            double windMoment = totalWindForcePerLength * (boomLength - x) * (boomLength - x) / 2.0;
             double windAxial = totalWindForce * Math.sin(Math.toRadians(effectiveWindDirection)) * xi;
 
             double totalShear = Math.abs(gravityShear) + Math.abs(windShear);
@@ -96,7 +106,7 @@ public class StructureSimulationService {
 
             double gravityDeflection = (gravityLoad * x * x) / (6.0 * elasticModulus * inertia)
                     * (3.0 * boomLength - x);
-            double windDeflection = (windForcePerLength * x * x) / (24.0 * elasticModulus * inertia)
+            double windDeflection = (totalWindForcePerLength * x * x) / (24.0 * elasticModulus * inertia)
                     * (boomLength * boomLength * 6.0 - 4.0 * boomLength * x + x * x);
             double totalDeflection = gravityDeflection + windDeflection;
 
@@ -115,10 +125,11 @@ public class StructureSimulationService {
         }
 
         double gravityMaxStress = (gravityLoad * boomLength) * (Math.sqrt(area / Math.PI)) / inertia;
-        double windMaxStress = (windForcePerLength * boomLength * boomLength / 2.0) * (Math.sqrt(area / Math.PI)) / inertia;
+        double windMaxStress = (totalWindForcePerLength * boomLength * boomLength / 2.0) * (Math.sqrt(area / Math.PI)) / inertia;
+        double gustStress = windMaxStress - (staticWindForcePerLength * boomLength * boomLength / 2.0) * (Math.sqrt(area / Math.PI)) / inertia;
 
         double gravityMaxDeflection = (gravityLoad * Math.pow(boomLength, 3)) / (3.0 * elasticModulus * inertia);
-        double windMaxDeflection = (windForcePerLength * Math.pow(boomLength, 4)) / (8.0 * elasticModulus * inertia);
+        double windMaxDeflection = (totalWindForcePerLength * Math.pow(boomLength, 4)) / (8.0 * elasticModulus * inertia);
 
         double stressRatio = maxStress / stressLimit;
         String stressStatus = getStressStatus(stressRatio);
@@ -145,6 +156,11 @@ public class StructureSimulationService {
                 .stabilityStatus(stabilityStatus)
                 .beamElements(beamElements)
                 .safetyFactor(actualSafetyFactor)
+                .gustFactor(gustFactor)
+                .gustStress(Math.max(0, gustStress))
+                .turbulenceIntensity(turbulenceIntensity)
+                .gustResponseFactor(gustResponseFactor)
+                .peakGustWindSpeed(peakGustWindSpeed)
                 .build();
     }
 
@@ -158,9 +174,17 @@ public class StructureSimulationService {
     }
 
     private double calculateWindLoadPerUnitLength(double windSpeed, double crossSectionArea, double boomLength) {
+        if (windSpeed <= 0) return 0.0;
         double windPressure = 0.5 * airDensity * windSpeed * windSpeed * windLoadCoefficient;
         double dragArea = Math.sqrt(crossSectionArea) * 2.0;
         return windPressure * dragArea;
+    }
+
+    private double calculateDynamicWindLoad(double windSpeed, double crossSectionArea,
+                                            double boomLength, double height, double gustResponseFactor) {
+        if (windSpeed <= 0) return 0.0;
+        double staticLoad = calculateWindLoadPerUnitLength(windSpeed, crossSectionArea, boomLength);
+        return staticLoad * (gustResponseFactor - 1.0);
     }
 
     private String getStressStatus(double stressRatio) {
