@@ -1,0 +1,171 @@
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: nestcart-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nestcart
+      POSTGRES_USER: nestcart
+      POSTGRES_PASSWORD: nestcart123
+      TZ: Asia/Shanghai
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./sql/postgresql-tune.conf:/etc/postgresql/postgresql.conf:ro
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nestcart -d nestcart"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - nestcart-net
+
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    container_name: nestcart-mosquitto
+    restart: unless-stopped
+    volumes:
+      - mosquittodata:/mosquitto/data
+      - mosquittolog:/mosquitto/log
+    command: >
+      sh -c "cat > /mosquitto/config/mosquitto.conf << 'EOF'
+      listener 1883
+      allow_anonymous true
+      persistence true
+      persistence_location /mosquitto/data/
+      log_dest stdout
+      EOF
+      mosquitto -c /mosquitto/config/mosquitto.conf"
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "mosquitto_sub", "-t", "$SYS/broker/uptime", "-C", "1", "-W", "3"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - nestcart-net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: nestcart-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/nestcart
+      DB_USERNAME: nestcart
+      DB_PASSWORD: nestcart123
+      MQTT_BROKER_URL: tcp://mosquitto:1883
+      JAVA_OPTS: >-
+        -XX:+UseContainerSupport
+        -XX:MaxRAMPercentage=75.0
+        -XX:+UseG1GC
+        -XX:+UseStringDeduplication
+        -Dfile.encoding=UTF-8
+    ports:
+      - "8080:8080"
+    networks:
+      - nestcart-net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: nestcart-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+    networks:
+      - nestcart-net
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: nestcart-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheusdata:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    ports:
+      - "9090:9090"
+    networks:
+      - nestcart-net
+
+  simulator-cart1:
+    build:
+      context: ./simulator
+      dockerfile: Dockerfile
+    container_name: nestcart-simulator-cart1
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - mosquitto
+    environment:
+      CART_ID: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+      API_URL: http://backend:8080
+      MQTT_BROKER: mosquitto
+      MQTT_PORT: 1883
+      INTERVAL: 30
+      HEIGHT_BASE: 10.0
+      HEIGHT_MIN: 6.0
+      HEIGHT_MAX: 15.0
+      WIND_BASE: 3.0
+      TERRAIN_REGION: default_battlefield
+      TERRAIN_PROFILE: hilly
+      TERRAIN_AFFECT: "true"
+    networks:
+      - nestcart-net
+
+  simulator-cart2:
+    build:
+      context: ./simulator
+      dockerfile: Dockerfile
+    container_name: nestcart-simulator-cart2
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - mosquitto
+    environment:
+      CART_ID: b2c3d4e5-f6a7-8901-bcde-f12345678901
+      API_URL: http://backend:8080
+      MQTT_BROKER: mosquitto
+      MQTT_PORT: 1883
+      INTERVAL: 45
+      HEIGHT_BASE: 14.0
+      HEIGHT_MIN: 8.0
+      HEIGHT_MAX: 18.0
+      WIND_BASE: 5.0
+      TERRAIN_REGION: default_battlefield
+      TERRAIN_PROFILE: mountain
+      TERRAIN_AFFECT: "true"
+    networks:
+      - nestcart-net
+
+volumes:
+  pgdata:
+  mosquittodata:
+  mosquittolog:
+  prometheusdata:
+
+networks:
+  nestcart-net:
+    driver: bridge

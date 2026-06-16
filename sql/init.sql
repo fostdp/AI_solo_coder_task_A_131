@@ -63,13 +63,31 @@ CREATE TABLE IF NOT EXISTS vision_analysis_result (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
-CREATE INDEX idx_sensor_data_cart_time ON sensor_data(cart_id, timestamp DESC);
-CREATE INDEX idx_sensor_data_timestamp ON sensor_data(timestamp DESC);
-CREATE INDEX idx_alert_record_cart_time ON alert_record(cart_id, created_at DESC);
-CREATE INDEX idx_alert_record_type ON alert_record(alert_type);
-CREATE INDEX idx_alert_record_unacked ON alert_record(acknowledged) WHERE acknowledged = FALSE;
-CREATE INDEX idx_terrain_region ON terrain_elevation(region_name, grid_x, grid_y);
-CREATE INDEX idx_vision_cart_height ON vision_analysis_result(cart_id, height);
+CREATE INDEX IF NOT EXISTS idx_sensor_data_cart_time ON sensor_data(cart_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_sensor_data_timestamp ON sensor_data(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_sensor_data_brin_timestamp ON sensor_data USING BRIN (timestamp) WITH (pages_per_range = 32);
+CREATE INDEX IF NOT EXISTS idx_sensor_data_height ON sensor_data(cart_id, height, timestamp DESC);
+
+CREATE INDEX IF NOT EXISTS idx_alert_record_cart_time ON alert_record(cart_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_alert_record_type ON alert_record(alert_type);
+CREATE INDEX IF NOT EXISTS idx_alert_record_severity ON alert_record(severity, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_alert_record_unacked ON alert_record(acknowledged) WHERE acknowledged = FALSE;
+CREATE INDEX IF NOT EXISTS idx_alert_record_brin_created ON alert_record USING BRIN (created_at) WITH (pages_per_range = 32);
+
+CREATE INDEX IF NOT EXISTS idx_terrain_region_xy ON terrain_elevation(region_name, grid_x, grid_y);
+CREATE INDEX IF NOT EXISTS idx_terrain_elevation ON terrain_elevation(region_name, elevation);
+
+CREATE INDEX IF NOT EXISTS idx_vision_cart_height ON vision_analysis_result(cart_id, height, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_vision_visible_grid ON vision_analysis_result USING GIN (visible_grid);
+CREATE INDEX IF NOT EXISTS idx_vision_brin_created ON vision_analysis_result USING BRIN (created_at) WITH (pages_per_range = 32);
+
+CREATE INDEX IF NOT EXISTS idx_nest_cart_name ON nest_cart(name);
+
+ANALYZE sensor_data;
+ANALYZE alert_record;
+ANALYZE terrain_elevation;
+ANALYZE vision_analysis_result;
+ANALYZE nest_cart;
 
 INSERT INTO nest_cart (id, name, description, boom_length, boom_cross_section_area, boom_moment_of_inertia, boom_elastic_modulus, basket_weight, base_height, max_height, stress_limit, sway_limit)
 VALUES
