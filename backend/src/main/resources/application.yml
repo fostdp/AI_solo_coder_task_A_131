@@ -27,12 +27,40 @@ nestcart:
     gravity: 9.81
     safety-factor: 1.5
     beam-element-count: 20
+    default-boom:
+      length: 8.0
+      cross-section-area: 0.003
+      moment-of-inertia: 1.5e-6
+      elastic-modulus: 2.1e11
+      stress-limit: 8.0e6
+    default-basket:
+      weight: 200.0
+      sway-limit: 0.5
+
   vision:
     earth-radius: 6371000.0
     default-grid-resolution: 10.0
     max-analysis-radius: 5000.0
+    use-quadtree: true
+    quadtree-max-depth: 6
+    quadtree-min-cells: 4
+    sector-count: 36
+    default-region: "default_battlefield"
+
+  terrain:
+    regions:
+      default_battlefield:
+        name: "default_battlefield"
+        grid-size-x: 100
+        grid-size-y: 100
+        resolution: 10.0
+        base-elevation: 0.0
+        generate-perlin: false
+        seed: 42
+
   alert:
     stress-warning-ratio: 0.8
     stress-critical-ratio: 0.95
     sway-warning-ratio: 0.7
     sway-critical-ratio: 0.9
+    alert-topic-prefix: "/topic/alerts"

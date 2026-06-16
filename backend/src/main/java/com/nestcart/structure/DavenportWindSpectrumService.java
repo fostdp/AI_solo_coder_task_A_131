@@ -1,4 +1,4 @@
-package com.nestcart.service;
+package com.nestcart.structure;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -6,20 +6,6 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Davenport 阵风谱服务
- * 基于 Davenport (1967) 风速谱，计算阵风效应下风荷载的动态放大
- *
- * Davenport谱形式:
- *   S_v(n) = 4 * k_v * v_10^2 * x^2 / [ n * (1 + x^2)^(4/3) ]
- *   其中 x = 1200 * n / v_10
- *
- * 阵风响应因子 GRF = 1 + g * I_u * sqrt(B^2 + R^2)
- *   g: 峰值因子（通常取 2.5~3.5）
- *   I_u: 湍流强度
- *   B: 背景因子
- *   R: 共振因子
- */
 @Service
 @Slf4j
 public class DavenportWindSpectrumService {

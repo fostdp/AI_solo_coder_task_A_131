@@ -15,7 +15,8 @@ import java.util.UUID;
 public class VisionResult {
 
     private UUID cartId;
-    private Double height;
+    private Double observerHeight;
+    private Double analysisRadius;
     private String regionName;
 
     private Integer visiblePoints;
@@ -24,10 +25,20 @@ public class VisionResult {
     private Double maxVisibleDistance;
     private Double theoreticalHorizon;
 
-    private List<int[]> visibleGridPoints;
-    private List<int[]> blockedGridPoints;
+    private List<GridPoint> visiblePointList;
+    private List<GridPoint> blockedPointList;
 
-    private List<SectorAnalysis> sectorAnalyses;
+    private List<SectorAnalysis> sectorAnalysis;
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class GridPoint {
+        private int gridX;
+        private int gridY;
+        private double elevation;
+    }
 
     @Data
     @Builder

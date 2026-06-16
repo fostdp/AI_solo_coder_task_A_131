@@ -4,27 +4,25 @@ class App {
     constructor() {
         this.nestcart3d = null;
         this.structureCanvas = null;
-        this.visionCanvas = null;
+        this.visionPanel = null;
         this.stompClient = null;
         this.carts = [];
         this.selectedCartId = null;
         this.alerts = [];
-        this.terrainCache = null;
 
         this.init();
     }
 
     async init() {
         this.structureCanvas = new StructureCanvas();
-        this.visionCanvas = new VisionCanvas();
-        this.visionCanvas.drawEmpty();
+        this.visionPanel = new VisibilityPanel(new VisionCanvas());
 
         this.setupTabs();
         this.setupControls();
         this.setupWebSocket();
 
         await this.loadCarts();
-        await this.loadTerrain();
+        this.visionPanel.setSelectedCart(this.selectedCartId);
 
         const container = document.getElementById('threejs-container');
         if (container) {
@@ -52,6 +50,9 @@ class App {
         const cartSelect = document.getElementById('cartSelect');
         cartSelect.addEventListener('change', () => {
             this.selectedCartId = cartSelect.value || null;
+            if (this.visionPanel) {
+                this.visionPanel.setSelectedCart(this.selectedCartId);
+            }
         });
 
         const rangeInputs = [
@@ -76,7 +77,11 @@ class App {
         });
 
         document.getElementById('runSimulation').addEventListener('click', () => this.runSimulation());
-        document.getElementById('runVision').addEventListener('click', () => this.runVisionAnalysis());
+        document.getElementById('runVision').addEventListener('click', () => {
+            if (this.visionPanel) {
+                this.visionPanel.runAnalysis();
+            }
+        });
 
         document.getElementById('showVisionCone').addEventListener('change', (e) => {
             if (this.nestcart3d) this.nestcart3d.showVisionCone = e.target.checked;
@@ -143,16 +148,6 @@ class App {
         }
     }
 
-    async loadTerrain() {
-        try {
-            const resp = await fetch(`${API_BASE}/terrain/default_battlefield`);
-            this.terrainCache = await resp.json();
-            this.visionCanvas.setTerrainData(this.terrainCache);
-        } catch (e) {
-            console.error('加载地形数据失败:', e);
-        }
-    }
-
     async runSimulation() {
         if (!this.selectedCartId) {
             alert('请先选择巢车');
@@ -182,31 +177,6 @@ class App {
 
         } catch (e) {
             console.error('运行仿真失败:', e);
-        }
-    }
-
-    async runVisionAnalysis() {
-        if (!this.selectedCartId) {
-            alert('请先选择巢车');
-            return;
-        }
-
-        const height = document.getElementById('simHeight').value;
-
-        try {
-            const resp = await fetch(
-                `${API_BASE}/simulation/vision/${this.selectedCartId}?height=${height}&regionName=default_battlefield&observerGridX=50&observerGridY=50`,
-                { method: 'POST' }
-            );
-            const result = await resp.json();
-
-            this.visionCanvas.update(result);
-            this.updateVisionSummary(result);
-
-            document.querySelector('[data-tab="vision"]').click();
-
-        } catch (e) {
-            console.error('运行视野分析失败:', e);
         }
     }
 
@@ -257,18 +227,6 @@ class App {
         `;
     }
 
-    updateVisionSummary(result) {
-        const container = document.getElementById('visionSummary');
-        container.innerHTML = `
-            <div class="summary-row"><span class="summary-label">观察高度</span><span class="summary-value">${result.height} m</span></div>
-            <div class="summary-row"><span class="summary-label">可见点数</span><span class="summary-value">${result.visiblePoints}</span></div>
-            <div class="summary-row"><span class="summary-label">总点数</span><span class="summary-value">${result.totalPoints}</span></div>
-            <div class="summary-row"><span class="summary-label">覆盖率</span><span class="summary-value">${(result.coverageRatio * 100).toFixed(1)}%</span></div>
-            <div class="summary-row"><span class="summary-label">最大可视距离</span><span class="summary-value">${result.maxVisibleDistance.toFixed(0)} m</span></div>
-            <div class="summary-row"><span class="summary-label">理论视距</span><span class="summary-value">${result.theoreticalHorizon.toFixed(0)} m</span></div>
-        `;
-    }
-
     addAlert(alert) {
         this.alerts.unshift(alert);
         if (this.alerts.length > 50) this.alerts.pop();
@@ -301,7 +259,7 @@ class App {
             <div class="alert-item ${alert.severity === 'CRITICAL' ? 'critical' : ''}">
                 <div class="alert-header">
                     <span class="alert-type">${alert.alertType === 'STRESS_OVERLIMIT' ? '⚠️ 应力超限' : '⚠️ 晃动超限'}</span>
-                    <span class="alert-time">${new Date(alert.timestamp).toLocaleTimeString()}</span>
+                    <span class="alert-time">${new Date(alert.createdAt).toLocaleTimeString()}</span>
                 </div>
                 <div class="alert-msg">${alert.message}</div>
             </div>

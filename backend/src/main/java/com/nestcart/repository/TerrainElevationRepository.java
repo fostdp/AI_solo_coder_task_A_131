@@ -26,4 +26,10 @@ public interface TerrainElevationRepository extends JpaRepository<TerrainElevati
     List<TerrainElevation> findByRegionAndGridPoint(
             @Param("regionName") String regionName,
             @Param("x") int x, @Param("y") int y);
+
+    TerrainElevation findByGridXAndGridYAndRegionName(int gridX, int gridY, String regionName);
+
+    List<TerrainElevation> findTopByRegionNameOrderByGridXDesc(String regionName);
+
+    List<TerrainElevation> findTopByRegionNameOrderByGridYDesc(String regionName);
 }

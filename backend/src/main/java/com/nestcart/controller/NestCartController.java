@@ -1,11 +1,11 @@
 package com.nestcart.controller;
 
+import com.nestcart.dtu.DtuSensorService;
 import com.nestcart.dto.SensorDataRequest;
 import com.nestcart.entity.NestCart;
 import com.nestcart.entity.SensorData;
 import com.nestcart.repository.NestCartRepository;
 import com.nestcart.repository.SensorDataRepository;
-import com.nestcart.service.AlertService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
@@ -23,7 +23,7 @@ public class NestCartController {
 
     private final NestCartRepository nestCartRepository;
     private final SensorDataRepository sensorDataRepository;
-    private final AlertService alertService;
+    private final DtuSensorService dtuSensorService;
 
     @GetMapping
     public ResponseEntity<List<NestCart>> getAllCarts() {
@@ -47,25 +47,7 @@ public class NestCartController {
     public ResponseEntity<SensorData> submitSensorData(
             @PathVariable UUID id,
             @Valid @RequestBody SensorDataRequest request) {
-        if (!nestCartRepository.existsById(id)) {
-            return ResponseEntity.notFound().build();
-        }
-
-        SensorData data = SensorData.builder()
-                .cartId(id)
-                .timestamp(OffsetDateTime.now())
-                .boomStress(request.getBoomStress())
-                .basketSway(request.getBasketSway())
-                .height(request.getHeight())
-                .observationDistance(request.getObservationDistance())
-                .windSpeed(request.getWindSpeed() != null ? request.getWindSpeed() : 0.0)
-                .windDirection(request.getWindDirection() != null ? request.getWindDirection() : 0.0)
-                .temperature(request.getTemperature() != null ? request.getTemperature() : 20.0)
-                .build();
-
-        data = sensorDataRepository.save(data);
-        alertService.checkAndAlert(data);
-
+        SensorData data = dtuSensorService.receiveAndValidate(id, request);
         return ResponseEntity.ok(data);
     }
 

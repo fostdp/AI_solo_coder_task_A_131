@@ -17,4 +17,6 @@ public interface AlertRecordRepository extends JpaRepository<AlertRecord, UUID> 
     List<AlertRecord> findByAlertTypeOrderByCreatedAtDesc(String alertType);
 
     long countByAcknowledgedFalse();
+
+    List<AlertRecord> findTop10ByOrderByCreatedAtDesc();
 }

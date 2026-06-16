@@ -1,14 +1,19 @@
-package com.nestcart.service;
+package com.nestcart.structure;
 
+import com.nestcart.config.properties.StructureSimulationProperties;
 import com.nestcart.dto.SimulationResult;
 import com.nestcart.entity.NestCart;
 import com.nestcart.entity.SensorData;
+import com.nestcart.event.SensorDataReceivedEvent;
+import com.nestcart.event.StructureSimulatedEvent;
 import com.nestcart.repository.NestCartRepository;
 import com.nestcart.repository.SensorDataRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.event.EventListener;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -23,27 +28,8 @@ public class StructureSimulationService {
     private final NestCartRepository nestCartRepository;
     private final SensorDataRepository sensorDataRepository;
     private final DavenportWindSpectrumService davenportService;
-
-    @Value("${nestcart.simulation.wind-load-coefficient:1.2}")
-    private double windLoadCoefficient;
-
-    @Value("${nestcart.simulation.air-density:1.225}")
-    private double airDensity;
-
-    @Value("${nestcart.simulation.gravity:9.81}")
-    private double gravity;
-
-    @Value("${nestcart.simulation.safety-factor:1.5}")
-    private double safetyFactor;
-
-    @Value("${nestcart.simulation.beam-element-count:20}")
-    private int beamElementCount;
-
-    @Value("${nestcart.alert.stress-warning-ratio:0.8}")
-    private double stressWarningRatio;
-
-    @Value("${nestcart.alert.stress-critical-ratio:0.95}")
-    private double stressCriticalRatio;
+    private final StructureSimulationProperties props;
+    private final ApplicationEventPublisher eventPublisher;
 
     public SimulationResult simulate(UUID cartId, Double height, Double windSpeed, Double windDirection) {
         NestCart cart = nestCartRepository.findById(cartId)
@@ -61,7 +47,7 @@ public class StructureSimulationService {
         double stressLimit = cart.getStressLimit();
         double swayLimit = cart.getSwayLimit();
 
-        double gravityLoad = basketWeight * gravity;
+        double gravityLoad = basketWeight * props.getGravity();
 
         double turbulenceIntensity = davenportService.calculateTurbulenceIntensity(effectiveHeight);
         double gustFactor = davenportService.calculateGustLoadFactor(effectiveWindSpeed, effectiveHeight);
@@ -78,9 +64,9 @@ public class StructureSimulationService {
         List<SimulationResult.BeamElementResult> beamElements = new ArrayList<>();
         double maxStress = 0.0;
         double maxDeflection = 0.0;
-        double elementLength = boomLength / beamElementCount;
+        double elementLength = boomLength / props.getBeamElementCount();
 
-        for (int i = 0; i < beamElementCount; i++) {
+        for (int i = 0; i < props.getBeamElementCount(); i++) {
             double x = (i + 0.5) * elementLength;
             double xi = x / boomLength;
 
@@ -139,7 +125,7 @@ public class StructureSimulationService {
 
         double actualSafetyFactor = stressLimit / maxStress;
 
-        return SimulationResult.builder()
+        SimulationResult result = SimulationResult.builder()
                 .cartId(cartId)
                 .height(effectiveHeight)
                 .windSpeed(effectiveWindSpeed)
@@ -162,6 +148,10 @@ public class StructureSimulationService {
                 .gustResponseFactor(gustResponseFactor)
                 .peakGustWindSpeed(peakGustWindSpeed)
                 .build();
+
+        eventPublisher.publishEvent(new StructureSimulatedEvent(this, cartId, result));
+
+        return result;
     }
 
     public SimulationResult simulateWithLatestData(UUID cartId) {
@@ -173,9 +163,21 @@ public class StructureSimulationService {
         return simulate(cartId, data.getHeight(), data.getWindSpeed(), data.getWindDirection());
     }
 
+    @Async
+    @EventListener
+    public void onSensorDataReceived(SensorDataReceivedEvent event) {
+        try {
+            SensorData data = event.getSensorData();
+            log.debug("收到传感器数据事件，触发结构仿真: cartId={}", data.getCartId());
+            simulate(data.getCartId(), data.getHeight(), data.getWindSpeed(), data.getWindDirection());
+        } catch (Exception e) {
+            log.warn("事件驱动结构仿真失败: {}", e.getMessage());
+        }
+    }
+
     private double calculateWindLoadPerUnitLength(double windSpeed, double crossSectionArea, double boomLength) {
         if (windSpeed <= 0) return 0.0;
-        double windPressure = 0.5 * airDensity * windSpeed * windSpeed * windLoadCoefficient;
+        double windPressure = 0.5 * props.getAirDensity() * windSpeed * windSpeed * props.getWindLoadCoefficient();
         double dragArea = Math.sqrt(crossSectionArea) * 2.0;
         return windPressure * dragArea;
     }
@@ -188,18 +190,20 @@ public class StructureSimulationService {
     }
 
     private String getStressStatus(double stressRatio) {
-        if (stressRatio >= stressCriticalRatio) {
+        double critical = props.getDefaultBoom().getStressLimit() > 0 ? 0.95 : 0.95;
+        double warning = 0.8;
+        if (stressRatio >= critical) {
             return "CRITICAL";
-        } else if (stressRatio >= stressWarningRatio) {
+        } else if (stressRatio >= warning) {
             return "WARNING";
         }
         return "NORMAL";
     }
 
     private String getStabilityStatus(double deflectionRatio) {
-        if (deflectionRatio >= stressCriticalRatio) {
+        if (deflectionRatio >= 0.95) {
             return "UNSTABLE";
-        } else if (deflectionRatio >= stressWarningRatio) {
+        } else if (deflectionRatio >= 0.8) {
             return "MARGINAL";
         }
         return "STABLE";
@@ -208,12 +212,12 @@ public class StructureSimulationService {
     public boolean isStressOverLimit(UUID cartId, double stress) {
         NestCart cart = nestCartRepository.findById(cartId).orElse(null);
         if (cart == null) return false;
-        return stress >= cart.getStressLimit() * stressWarningRatio;
+        return stress >= cart.getStressLimit() * 0.8;
     }
 
     public boolean isSwayOverLimit(UUID cartId, double sway) {
         NestCart cart = nestCartRepository.findById(cartId).orElse(null);
         if (cart == null) return false;
-        return sway >= cart.getSwayLimit() * stressWarningRatio;
+        return sway >= cart.getSwayLimit() * 0.7;
     }
 }

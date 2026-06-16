@@ -2,8 +2,9 @@ package com.nestcart.controller;
 
 import com.nestcart.dto.SimulationResult;
 import com.nestcart.dto.VisionResult;
-import com.nestcart.service.StructureSimulationService;
-import com.nestcart.service.VisionAnalysisService;
+import com.nestcart.structure.StructureSimulationService;
+import com.nestcart.visibility.VisionAnalysisService;
+import com.nestcart.config.properties.VisionAnalysisProperties;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -17,6 +18,7 @@ public class SimulationController {
 
     private final StructureSimulationService structureSimulationService;
     private final VisionAnalysisService visionAnalysisService;
+    private final VisionAnalysisProperties visionProps;
 
     @PostMapping("/structure/{cartId}")
     public ResponseEntity<SimulationResult> runStructureSimulation(
@@ -40,12 +42,15 @@ public class SimulationController {
             @RequestParam(required = false) String regionName,
             @RequestParam(required = false) Integer observerGridX,
             @RequestParam(required = false) Integer observerGridY) {
-        return ResponseEntity.ok(visionAnalysisService.analyzeVision(
-                cartId, height, regionName, observerGridX, observerGridY));
+        double h = height != null ? height : 10.0;
+        double r = visionProps.getMaxAnalysisRadius();
+        String region = regionName != null ? regionName : visionProps.getDefaultRegion();
+        return ResponseEntity.ok(visionAnalysisService.analyzeVision(cartId, h, r, region));
     }
 
     @GetMapping("/vision/horizon")
     public ResponseEntity<Double> calculateHorizon(@RequestParam double height) {
-        return ResponseEntity.ok(visionAnalysisService.calculateTheoreticalHorizon(height));
+        double horizon = Math.sqrt(2 * visionProps.getEarthRadius() * height + height * height);
+        return ResponseEntity.ok(horizon);
     }
 }
